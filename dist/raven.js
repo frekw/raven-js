@@ -1,4 +1,4 @@
-/*! Raven.js 1.1.8 (b2a8e8c) | github.com/getsentry/raven-js */
+/*! Raven.js 1.1.8 (e893c65) | github.com/getsentry/raven-js */
 
 /*
  * Includes TraceKit
@@ -9,45 +9,25 @@
  * https://github.com/getsentry/raven-js/blob/master/LICENSE
  *
  */
+;(function(window, undefined){
+'use strict';
+
 /*
  TraceKit - Cross brower stack traces - github.com/occ/TraceKit
  MIT license
 */
 
-(function(window, undefined) {
-
-
-var TraceKit = {};
-var _oldTraceKit = window.TraceKit;
+var TraceKit = {
+    remoteFetching: false,
+    collectWindowErrors: true,
+    // 3 lines before, the offending line, 3 lines after
+    linesOfContext: 7
+};
 
 // global reference to slice
 var _slice = [].slice;
 var UNKNOWN_FUNCTION = '?';
 
-
-/**
- * _has, a better form of hasOwnProperty
- * Example: _has(MainHostObject, property) === true/false
- *
- * @param {Object} host object to check property
- * @param {string} key to check
- */
-function _has(object, key) {
-    return Object.prototype.hasOwnProperty.call(object, key);
-}
-
-function _isUndefined(what) {
-    return typeof what === 'undefined';
-}
-
-/**
- * TraceKit.noConflict: Export TraceKit out to another variable
- * Example: var TK = TraceKit.noConflict()
- */
-TraceKit.noConflict = function noConflict() {
-    window.TraceKit = _oldTraceKit;
-    return TraceKit;
-};
 
 /**
  * TraceKit.wrap: Wrap any function in a TraceKit reporter
@@ -134,6 +114,14 @@ TraceKit.report = (function reportModuleWrapper() {
     }
 
     /**
+     * Remove all crash handlers.
+     */
+    function unsubscribeAll() {
+        uninstallGlobalHandler();
+        handlers = [];
+    }
+
+    /**
      * Dispatch stack information to all handlers.
      * @param {Object.<string, *>} stack
      */
@@ -143,7 +131,7 @@ TraceKit.report = (function reportModuleWrapper() {
           return;
         }
         for (var i in handlers) {
-            if (_has(handlers, i)) {
+            if (hasKey(handlers, i)) {
                 try {
                     handlers[i].apply(null, [stack].concat(_slice.call(arguments, 2)));
                 } catch (inner) {
@@ -173,7 +161,7 @@ TraceKit.report = (function reportModuleWrapper() {
     function traceKitWindowOnError(message, url, lineNo, colNo, ex) {
         var stack = null, skipNotify = false;
 
-        if (!_isUndefined(ex)) {
+        if (!isUndefined(ex)) {
             // New chrome and blink send along a real error object
             // Let's just report that like a normal error.
             // See: https://mikewest.org/2013/08/debugging-runtime-errors-with-window-onerror
@@ -214,12 +202,22 @@ TraceKit.report = (function reportModuleWrapper() {
 
     function installGlobalHandler ()
     {
-        if (_onErrorHandlerInstalled === true) {
+        if (_onErrorHandlerInstalled) {
             return;
         }
         _oldOnerrorHandler = window.onerror;
         window.onerror = traceKitWindowOnError;
         _onErrorHandlerInstalled = true;
+    }
+
+    function uninstallGlobalHandler ()
+    {
+        if (!_onErrorHandlerInstalled) {
+            return;
+        }
+        window.onerror = _oldOnerrorHandler;
+        _onErrorHandlerInstalled = false;
+        _oldOnerrorHandler = undefined;
     }
 
     /**
@@ -265,6 +263,7 @@ TraceKit.report = (function reportModuleWrapper() {
 
     report.subscribe = subscribe;
     report.unsubscribe = unsubscribe;
+    report.uninstall = unsubscribeAll;
     return report;
 }());
 
@@ -374,7 +373,7 @@ TraceKit.computeStackTrace = (function computeStackTraceWrapper() {
      * @return {Array.<string>} Source contents.
      */
     function getSource(url) {
-        if (!_has(sourceCache, url)) {
+        if (!hasKey(sourceCache, url)) {
             // URL needs to be able to fetched within the acceptable domain.  Otherwise,
             // cross-domain errors will be triggered.
             var source = '';
@@ -412,7 +411,7 @@ TraceKit.computeStackTrace = (function computeStackTraceWrapper() {
         for (var i = 0; i < maxLines; ++i) {
             line = source[lineNo - i] + line;
 
-            if (!_isUndefined(line)) {
+            if (!isUndefined(line)) {
                 if ((m = reGuessFunction.exec(line))) {
                     return m[1];
                 } else if ((m = reFunctionArgNames.exec(line))) {
@@ -451,7 +450,7 @@ TraceKit.computeStackTrace = (function computeStackTraceWrapper() {
         line -= 1; // convert to 0-based index
 
         for (var i = start; i < end; ++i) {
-            if (!_isUndefined(source[i])) {
+            if (!isUndefined(source[i])) {
                 context.push(source[i]);
             }
         }
@@ -802,7 +801,7 @@ TraceKit.computeStackTrace = (function computeStackTraceWrapper() {
             source;
 
         for (i in scripts) {
-            if (_has(scripts, i) && !scripts[i].src) {
+            if (hasKey(scripts, i) && !scripts[i].src) {
                 inlineScriptBlocks.push(scripts[i]);
             }
         }
@@ -1091,29 +1090,51 @@ TraceKit.computeStackTrace = (function computeStackTraceWrapper() {
     return computeStackTrace;
 }());
 
-
-//Default options:
-if (!TraceKit.remoteFetching) {
-  TraceKit.remoteFetching = true;
-}
-if (!TraceKit.collectWindowErrors) {
-  TraceKit.collectWindowErrors = true;
-}
-if (!TraceKit.linesOfContext || TraceKit.linesOfContext < 1) {
-  // 3 lines before, the offending line, 3 lines after
-  TraceKit.linesOfContext = 7;
-}
-
-
-
-// Export to global object
-window.TraceKit = TraceKit;
-
-}(window));
-
-;(function(window, undefined){
-
 'use strict';
+
+/*
+ * Default transport.
+ * */
+var HTTPGetTransport = {
+    setup: function(dsn, triggerEvent){
+        if (dsn.pass)
+            throw new RavenConfigError('Do not specify your private key in the DSN!');
+        this.dsn = dsn;
+        this.triggerEvent = triggerEvent;
+    },
+    send: function(data, endpoint){
+        var img = new Image(),
+            triggerEvent = this.triggerEvent,
+            src = endpoint + this.getAuthQueryString() + '&sentry_data=' + encodeURIComponent(JSON.stringify(data));
+
+        img.onload = function success() {
+            triggerEvent('success', {
+                data: data,
+                src: src
+            });
+        };
+        img.onerror = img.onabort = function failure() {
+            triggerEvent('failure', {
+                data: data,
+                src: src
+            });
+        };
+        img.src = src;
+    },
+
+    getAuthQueryString: function() {
+        if (this.cachedAuth) return this.cachedAuth;
+        var qs = [
+            'sentry_version=4',
+            'sentry_client=raven-js/' + Raven.VERSION
+        ];
+        if (globalKey) {
+            qs.push('sentry_key=' + this.dsn.user);
+        }
+
+        return this.cachedAuth = '?' + qs.join('&');
+    }
+};
 
 // First, check for JSON support
 // If there is no JSON, we no-op the core features of Raven
@@ -1125,6 +1146,8 @@ var _Raven = window.Raven,
     globalUser,
     globalKey,
     globalProject,
+    globalTransports = { 'default': HTTPGetTransport },
+    globalTransport = null,
     globalOptions = {
         logger: 'javascript',
         ignoreErrors: [],
@@ -1136,10 +1159,6 @@ var _Raven = window.Raven,
         extra: {}
     };
 
-var TK = TraceKit.noConflict();
-
-// Disable Tracekit's remote fetching by default
-TK.remoteFetching = false;
 
 /*
  * The core Raven singleton
@@ -1150,7 +1169,7 @@ var Raven = {
     VERSION: '1.1.8',
 
     // Expose TraceKit to the Raven namespace
-    TraceKit: TK,
+    TraceKit: TraceKit,
 
     /*
      * Allow Raven to be configured as soon as it is loaded
@@ -1215,18 +1234,27 @@ var Raven = {
                       '/' + path + 'api/' + globalProject + '/store/';
 
         if (uri.protocol) {
-            globalServer = uri.protocol + ':' + globalServer;
+            // Only use the first part of the url if it contains
+            // a plugin identifier, e.g  https+post -> https
+            globalServer = uri.protocol.split('+')[0] + ':' + globalServer;
         }
 
         if (globalOptions.fetchContext) {
-            TK.remoteFetching = true;
+            TraceKit.remoteFetching = true;
         }
 
         if (globalOptions.linesOfContext) {
-            TK.linesOfContext = globalOptions.linesOfContext;
+            TraceKit.linesOfContext = globalOptions.linesOfContext;
         }
 
-        TK.collectWindowErrors = !!globalOptions.collectWindowErrors;
+        TraceKit.collectWindowErrors = !!globalOptions.collectWindowErrors;
+
+        globalTransport = uri.protocol && globalTransports[uri.protocol] ? globalTransports[uri.protocol] : globalTransports['default'];
+
+        // Allow transports to fall back to other transport protocols,
+        // if the chosen one isn't supported
+        var transport = globalTransport.setup(uri, triggerEvent);
+        globalTransport = transport ? transport : globalTransport;
 
         // return for chaining
         return Raven;
@@ -1242,9 +1270,26 @@ var Raven = {
      */
     install: function() {
         if (isSetup()) {
-            TK.report.subscribe(handleStackInfo);
+            TraceKit.report.subscribe(handleStackInfo);
         }
 
+        return Raven;
+    },
+
+
+
+    /*
+     * Register a transport plugin for pushing data into Sentry.
+     * Transport plugins are chosen based upon the DSN passed into Raven.configure,
+     * e.g Raven.configure('http://...') will use the plugin registered for 'http'.
+     *
+     * @param {string} protocol A protocol identifier in the DSN, e.g http or https+post
+     * @param {object} transport An implementation of the transport. Must implement the `setup(dsn)` and `send(data, endpoint)` methods.
+     */
+    registerTransport: function(protocol, transport){
+        if(globalTransports[protocol]) throw new RavenConfigError('Protocol ' + protocol + ' already has a registered transport method');
+
+        globalTransports[protocol] = transport;
         return Raven;
     },
 
@@ -1298,10 +1343,13 @@ var Raven = {
         }
 
         function wrapped() {
-            var args = [], i = arguments.length;
+            var args = [], i = arguments.length,
+                deep = !options || options && options.deep !== false;
             // Recursively wrap all of a function's arguments that are
             // functions themselves.
-            while(i--) args[i] = Raven.wrap(options, arguments[i]);
+
+            while(i--) args[i] = deep ? Raven.wrap(options, arguments[i]) : arguments[i];
+
             try {
                 /*jshint -W040*/
                 return func.apply(this, args);
@@ -1331,7 +1379,7 @@ var Raven = {
      * @return {Raven}
      */
     uninstall: function() {
-        TK.report.unsubscribe(handleStackInfo);
+        TraceKit.report.uninstall();
 
         return Raven;
     },
@@ -1356,7 +1404,7 @@ var Raven = {
         // raises an exception different from the one we asked to
         // report on.
         try {
-            TK.report(ex, options);
+            TraceKit.report(ex, options);
         } catch(ex1) {
             if(ex !== ex1) {
                 throw ex1;
@@ -1438,7 +1486,7 @@ function triggerEvent(eventType, options) {
 }
 
 var dsnKeys = 'source protocol user pass host port path'.split(' '),
-    dsnPattern = /^(?:(\w+):)?\/\/(\w+)(:\w+)?@([\w\.-]+)(?::(\d+))?(\/.*)/;
+    dsnPattern = /^(?:(\w+|\w+\+\w+)?:)?\/\/(\w+)(?::(\w+))?@([\w\.-]+)(?::(\d+))?(\/.*)/;
 
 function RavenConfigError(message) {
     this.name = 'RavenConfigError';
@@ -1451,16 +1499,13 @@ RavenConfigError.prototype.constructor = RavenConfigError;
 function parseDSN(str) {
     var m = dsnPattern.exec(str),
         dsn = {},
-        i = 7;
+        i = dsnKeys.length;
 
     try {
         while (i--) dsn[dsnKeys[i]] = m[i] || '';
     } catch(e) {
         throw new RavenConfigError('Invalid DSN: ' + str);
     }
-
-    if (dsn.pass)
-        throw new RavenConfigError('Do not specify your private key in the DSN!');
 
     return dsn;
 }
@@ -1482,6 +1527,17 @@ function isEmptyObject(what) {
     return true;
 }
 
+/**
+ * hasKey, a better form of hasOwnProperty
+ * Example: hasKey(MainHostObject, property) === true/false
+ *
+ * @param {Object} host object to check property
+ * @param {string} key to check
+ */
+function hasKey(object, key) {
+    return Object.prototype.hasOwnProperty.call(object, key);
+}
+
 function each(obj, callback) {
     var i, j;
 
@@ -1499,23 +1555,6 @@ function each(obj, callback) {
             }
         }
     }
-}
-
-var cachedAuth;
-
-function getAuthQueryString() {
-    if (cachedAuth) return cachedAuth;
-
-    var qs = [
-        'sentry_version=4',
-        'sentry_client=raven-js/' + Raven.VERSION
-    ];
-    if (globalKey) {
-        qs.push('sentry_key=' + globalKey);
-    }
-
-    cachedAuth = '?' + qs.join('&');
-    return cachedAuth;
 }
 
 function handleStackInfo(stackInfo, options) {
@@ -1725,22 +1764,7 @@ function send(data) {
 
 
 function makeRequest(data) {
-    var img = new Image(),
-        src = globalServer + getAuthQueryString() + '&sentry_data=' + encodeURIComponent(JSON.stringify(data));
-
-    img.onload = function success() {
-        triggerEvent('success', {
-            data: data,
-            src: src
-        });
-    };
-    img.onerror = img.onabort = function failure() {
-        triggerEvent('failure', {
-            data: data,
-            src: src
-        });
-    };
-    img.src = src;
+    globalTransport.send(data, globalServer);
 }
 
 function isSetup() {
